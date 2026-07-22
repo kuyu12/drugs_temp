@@ -1,0 +1,10 @@
+input_drug_name,matched_name,registration_number,in_health_basket,basket_inclusion_date,owner,dosage_form,active_components,indications,limitations,use_in_clalit,match_count,match_strategy,query_used,lookup_stage,error
+abraxane,,,,,,,,,,,0,no_matches,,,
+actimune,,,,,,,,,,,0,no_matches,,,
+alimta,,,,,,,,,,,0,no_matches,,,
+ampyra,,,,,,,,,,,0,no_matches,,,
+aromasin,,,,,,,,,,,0,no_matches,,,
+avastin,,,,,,,,,,,0,no_matches,,,
+ostenil,,,,,,,,,,,0,no_matches,,,
+azilect,,,,,,,,,,,0,no_matches,,,
+bendamustin,,,,,,,,,,,0,no_matches,,,
