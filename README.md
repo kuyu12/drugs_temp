@@ -1,4 +1,4 @@
-# Medical Devices Registry
+# Medical Devices Registry (pandas, version 0.2.0)
 
 Independent Python project for the public Ministry of Health Medical Devices
 registry. Direct HTTP requests are used; no browser or crawling runtime is needed.
@@ -34,12 +34,26 @@ string. Detail totalRows may be zero even when matching detail records exist.
 True selects the declaration route. Expiration dates are preserved without
 inferring an official active/expired status.
 
+## Project layout
+
+- `src/moh_medical_devices/client.py`: HTTP client, retries and shared rate limiter.
+- `src/moh_medical_devices/pandas_ingestion.py`: listing/detail extraction into pandas.
+- `src/moh_medical_devices/record_normalization.py`: original-field preservation and normalized columns.
+- `notebooks/medical_devices_ingestion.ipynb`: executable notebook.
+- `integration/`: unchanged Swagger/OpenAPI and Postman definitions.
+
+There is no table.py, Spark ingestion, Delta DDL or file snapshot pipeline.
+The public function is `fetch_medical_devices_dataframe`, not featch_dataframe.
+Always transfer the entire project, not only the notebook. Version 0.2.0 requires
+pandas_ingestion.py and record_normalization.py; these must be tracked in Git.
+
 ## Databricks notebook: pandas only
 
 Clone this repository into a Databricks Git folder and open
 `notebooks/medical_devices_ingestion.ipynb`. Run the dependency installation cell,
-restart Python if requested by the runtime, then run the remaining cells. Imports
-are resolved from the project checkout; alternatively install the project using
+restart Python if requested by the runtime, then run the remaining cells. The setup cell validates required source files, reports the loaded package path
+and checks version 0.2.0. After pulling updated code, restart Python to clear any
+older imports. Imports are resolved from the project checkout; alternatively install the project using
 `pip install /path/to/checkout` before running the notebook.
 
 No Volume, uploaded wheel, Unity Catalog, Spark, widgets, table destination or
@@ -75,6 +89,22 @@ work, close worker sessions and fail the whole extraction without partial succes
 Already-running HTTP requests may finish or reach their configured timeout.
 Duplicate registrations are fetched once and mapped back without changing row order.
 
+Public Python API:
+
+```python
+from moh_medical_devices import (
+    MedicalDevicesClient, MedicalDevicesConfig, fetch_medical_devices_dataframe,
+)
+
+client = MedicalDevicesClient(MedicalDevicesConfig())
+try:
+    devices_df = fetch_medical_devices_dataframe(
+        client, detail_workers=4, requests_per_second=2,
+    )
+finally:
+    client.close()
+```
+
 At completion, `devices_df` is a **pandas DataFrame**, not a Spark DataFrame:
 
 ```python
@@ -101,29 +131,30 @@ first page cannot be ruled out, especially during a long details run. Detected
 source changes require a fresh run. For Jobs, use one notebook task and max
 concurrent runs=1. API requests run on the driver, not in Spark UDFs.
 
-## Optional legacy CLI snapshots
-
-The existing file-based CLI is retained separately. The notebook does not call
-it or the optional Spark/table-preparation helpers.
+## Local installation and checks
 
 ```sh
 python3 -m pip install -e '.[test]'
 python3 -m pytest -q
-python3 -m moh_medical_devices --output output --run-id sample_20261020 --max-pages 2
+python3 -m moh_medical_devices --search Somnu
 ```
 
-Omit --max-pages for a full local file snapshot. CLI output includes raw page
-checkpoints, records.jsonl and a manifest under output/run_id. Resume requires
-unchanged source head/count and matching parameters. A complete manifest requires
-the fetched row count to match the API total. Samples are marked sampled, and
-errors are failed. Optional table preparation only accepts complete,
-checksum-verified file snapshots; it never writes a table itself.
+The CLI builds a pandas DataFrame in memory and prints a summary, without writing
+files. The notebook retains devices_df in the session for further work. Use a
+narrow search such as Somnu for a short live smoke test; search='' fetches the
+entire registry and every requested detail.
 
-Registration number is not a unique row key. CLI row identity is
-run_id/source_page/source_row, while raw_json preserves all original fields.
-Dates use the observed MM/dd/yyyy format, retaining original strings and leaving
-invalid dates unknown instead of guessing.
+Build the wheel if the company prefers package installation:
 
-The checked-in ipynb is the notebook source of truth. The integration folder
-contains Postman collection/environment and OpenAPI. API request contracts and
-authentication behavior are unchanged.
+```sh
+python3 -m pip wheel . --no-deps --wheel-dir dist
+python3 tools/build_delivery.py
+```
+
+The delivery builder checks that required notebook/package files exist and are
+tracked in Git before packaging. The ZIP includes source, notebook, tests,
+integration definitions and only wheels matching version 0.2.0. The notebook
+does not require a wheel, Volume, catalog, SQL or a table.
+
+The API request contracts and public source are unchanged. The checked-in ipynb
+is the notebook source of truth; do not transfer a notebook without its package.

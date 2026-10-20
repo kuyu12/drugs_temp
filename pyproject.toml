@@ -4,8 +4,8 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "moh-medical-devices-pipeline"
-version = "0.1.0"
-description = "Read-only Medical Devices registry ingestion for Databricks"
+version = "0.2.0"
+description = "Medical Devices API to pandas, including Databricks notebook"
 requires-python = ">=3.11"
 dependencies = ["requests>=2.32.3,<3", "pandas>=2.2,<3"]
 
