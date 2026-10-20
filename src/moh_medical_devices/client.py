@@ -1,7 +1,9 @@
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import datetime, timezone
 from email.utils import parsedate_to_datetime
 import time
+from math import isfinite
+from threading import Event, Lock
 from typing import Any
 from urllib.parse import urlsplit
 
@@ -10,6 +12,36 @@ import requests
 
 class RegistryError(RuntimeError):
     """API access, contract or transport failure; never an empty result."""
+
+
+class RequestLimiter:
+    """Shared request spacing, server cooldown and cancellation for one run."""
+
+    def __init__(self, requests_per_second):
+        if isinstance(requests_per_second, bool) or not isinstance(requests_per_second, (int, float)) or not isfinite(requests_per_second) or not 0 < requests_per_second <= 5:
+            raise ValueError("requests_per_second must be > 0 and <= 5")
+        self.interval = 1 / requests_per_second
+        self._next = 0.0
+        self._lock = Lock()
+        self._stopped = Event()
+
+    def wait(self):
+        while not self._stopped.is_set():
+            with self._lock:
+                now = time.monotonic()
+                remaining = self._next - now
+                if remaining <= 0:
+                    self._next = now + self.interval
+                    return
+            self._stopped.wait(remaining)
+        raise RegistryError("Concurrent extraction cancelled")
+
+    def defer(self, seconds):
+        with self._lock:
+            self._next = max(self._next, time.monotonic() + seconds)
+
+    def stop(self):
+        self._stopped.set()
 
 
 @dataclass(frozen=True)
@@ -57,8 +89,9 @@ def parse_page(data: dict[str, Any], requested_page: int) -> tuple[list[dict], i
 
 
 class Client:
-    def __init__(self, config: Config = Config(), session=None):
+    def __init__(self, config: Config = Config(), session=None, limiter=None):
         self.config = config
+        self.limiter = limiter
         self.session = session or requests.Session()
         self.session.headers.update({"Accept": "application/json", "Content-Type": "application/json",
                                      "User-Agent": "moh-medical-devices-pipeline/0.1"})
@@ -66,9 +99,15 @@ class Client:
     def close(self):
         self.session.close()
 
+    def fork(self, limiter):
+        # Public API workers use independent sessions; never share Session across threads.
+        return Client(replace(self.config, delay_seconds=0), limiter=limiter)
+
     def post(self, action: str, payload: dict) -> dict[str, Any]:
         for attempt in range(self.config.attempts):
             time.sleep(self.config.delay_seconds)
+            if self.limiter is not None:
+                self.limiter.wait()
             try:
                 response = self.session.post(self.config.base_url.rstrip("/") + "/" + action,
                                              json=payload, timeout=self.config.timeout_seconds)
@@ -90,7 +129,10 @@ class Client:
                         wait = (parsedate_to_datetime(retry) - datetime.now(timezone.utc)).total_seconds()
                     except (ValueError, TypeError):
                         wait = 2 ** (attempt + 1)
-                time.sleep(max(0, wait))
+                if self.limiter is not None:
+                    self.limiter.defer(max(0, wait))
+                else:
+                    time.sleep(max(0, wait))
                 continue
             if response.status_code != 200:
                 raise RegistryError(f"HTTP {response.status_code}: {action}")

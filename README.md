@@ -1,7 +1,7 @@
 # Medical Devices Registry
 
 Independent Python project for the public Ministry of Health Medical Devices
-registry. It uses direct HTTP requests; no browser or crawling runtime is needed.
+registry. Direct HTTP requests are used; no browser or crawling runtime is needed.
 
 ## Observed API
 
@@ -17,84 +17,94 @@ All five observed operations use POST with JSON:
 | GetManufacturesFilter | Manufacturer suggestions |
 | GetRegisteredOwnerFilter | Registered-owner suggestions |
 
-Frontend configuration and code were inspected on 2026-10-20. Search reported
-30,283 records. A 1,000-row first page and the 283-row final page (page 30) were
-verified. Details for one registration returned the same 13 business fields as
-the search listing. The extraction uses the listing, avoiding one call per device.
-See `integration/openapi.yaml` for request/response schemas and verification scope.
+Frontend configuration and code were inspected on 2026-10-20. A full local
+file-based extraction returned 30,283 rows across 31 pages, with 30,282 distinct
+registration numbers. The earlier extraction used the listing endpoint only.
+Details for one inspected registration had the same 13 business fields, but
+equivalence for every registration is not assumed. The notebook can fetch all
+details as well. See `integration/openapi.yaml` for the unchanged API contracts.
+The notebook has not been executed in the company Databricks workspace.
 
-Full local extraction also passed on 2026-10-20: 30,283 rows across 31 pages,
-30,282 distinct registration numbers, no duplicate full-row hashes and no invalid
-date strings. This verified the API and local pipeline, not a run on Databricks.
-The notebook and table preparation have not been executed in the company workspace.
+Source spellings include `maxResaults`, `manufacter`, `isDecending`,
+`typePremission`, `experationDate` and `experties`. Pages start at zero.
+Details require registrationNumber as a JSON number, while responses return a
+string. Detail totalRows may be zero even when matching detail records exist.
 
-Important source spellings: `maxResaults`, `manufacter`, `isDecending`,
-`typePremission`, `experationDate`, `experties`. Search pages start at zero.
-The detail request must send registrationNumber as a JSON number; the response
-returns it as a string. Details may report totalRows=0 even with matching rows.
-For details, check the returned records rather than treating totalRows=0 as absence.
+`typePremission=false` means all declaration categories, not active licenses only.
+True selects the declaration route. Expiration dates are preserved without
+inferring an official active/expired status.
 
-`typePremission=false` means all declaration categories, not only active licenses.
-The source includes old expiration dates. No active/expired status is inferred.
-`typePremission=true` is the website's declaration-route filter.
+## Databricks notebook: pandas only
 
-## Databricks notebook
+Clone this repository into a Databricks Git folder and open
+`notebooks/medical_devices_ingestion.ipynb`. Run the dependency installation cell,
+restart Python if requested by the runtime, then run the remaining cells. Imports
+are resolved from the project checkout; alternatively install the project using
+`pip install /path/to/checkout` before running the notebook.
 
-Build on a developer machine:
+No Volume, uploaded wheel, Unity Catalog, Spark, widgets, table destination or
+run_id is required. Requirements: Python 3.11+, pandas, requests, enough driver
+memory and outbound HTTPS to registries.health.gov.il:443. Use company-approved
+package distribution where required.
 
-```sh
-python3 -m pip wheel . --no-deps --wheel-dir dist
+Notebook configuration:
+
+- `page_size=1000`: listing pagination size.
+- `include_details=True`: fetch details once per unique registration number.
+- `search=''`: blank for the entire registry.
+- `declaration_only=False`: all declaration categories.
+- `detail_workers=4`: bounded threads for detail requests (1..8).
+- `requests_per_second=2`: shared detail request-start limit, including retries (0..5, exclusive of zero).
+- `delay_seconds=2`: listing pacing and sequential-detail pacing.
+
+At about 30,000 registrations and 2 starts/second, the detail rate-limit floor
+alone is about 4.2 hours. Network latency and retries add time; no completion time
+or freedom from blocking is guaranteed. This rate is a client setting, not a
+published or approved server quota. Reduce requests_per_second if throttled.
+Set detail_workers=1 to use the original sequential mode, which retains the
+configured per-request delay (over 17 hours at 2 seconds for 30,000 details).
+The function's default remains sequential for existing callers; the notebook
+explicitly enables four workers. Set include_details=False if listing fields suffice.
+Filter-option lookups are not joined as if they were device detail records.
+
+Each thread reuses an independent public-API Session. Only detail calls run in
+parallel; listing pages remain ordered and sequential. There are at most
+detail_workers submitted futures, not one future per device. HTTP 429/5xx
+Retry-After/backoff updates a shared cooldown. Access/contract errors cancel new
+work, close worker sessions and fail the whole extraction without partial success.
+Already-running HTTP requests may finish or reach their configured timeout.
+Duplicate registrations are fetched once and mapped back without changing row order.
+
+At completion, `devices_df` is a **pandas DataFrame**, not a Spark DataFrame:
+
+```python
+devices_df.shape
+devices_df.attrs['extraction']
+devices_df[['registration_number', 'product_name_en', 'details']].head()
 ```
 
-Upload the wheel to an existing Unity Catalog Volume. Import either
-`notebooks/medical_devices_ingestion.ipynb` or the Databricks source `.py` notebook.
-Replace the wheel path in its first installation cell.
+Every listing row, original column, normalized column and raw_json is retained.
+Duplicate registration numbers stay as separate rows. The details column holds
+a list of all matching detail records, preserving nested and future fields.
+details_raw_json retains the complete detail response, and
+details_fetched_at_utc records its fetch time separately. No arbitrary detail
+record is selected and no listing fields are overwritten by detail values.
 
-Requirements: Python 3.11+, UC-enabled compute, Volume READ/WRITE privileges and
-outbound HTTPS to registries.health.gov.il:443. Install dependencies via company
-approved package distribution. PySpark is supplied by Databricks, not this package.
+No files or tables are written. Data lives only in the current Python session
+and is lost when it ends. An interrupted run must restart; there are no durable
+checkpoints in this mode. An API/enrichment failure raises instead of returning
+partial success. devices_df is cleared before each run to avoid stale results.
 
-Set widgets:
+Counts, page lengths, page identity, repeated pages and final head/count are
+checked. The API has no verified snapshot token: same-count changes outside the
+first page cannot be ruled out, especially during a long details run. Detected
+source changes require a fresh run. For Jobs, use one notebook task and max
+concurrent runs=1. API requests run on the driver, not in Spark UDFs.
 
-- `root`: existing `/Volumes/catalog/schema/volume/medical_devices` directory.
-- `run_id`: unique snapshot ID, e.g. `medical_devices_20261020`; keep the same ID only for retries.
-- `page_size`: 1000 by default; 1..1000 supported by this client.
-- `max_pages`: 0 for a full snapshot, positive for an explicit sample.
-- `search`: blank for the whole registry or a source text filter.
-- `declaration_only`: false for all declaration categories.
-- `target_table`: the proposed three-part name, used to prepare DDL only.
+## Optional legacy CLI snapshots
 
-For Jobs use one notebook task and max concurrent runs=1. Run API calls on the
-driver, not in Spark UDFs. A new scheduled refresh needs a new run_id.
-
-## Output and completeness
-
-`<root>/<run_id>/` contains config, per-page raw JSON, records.jsonl and manifest.
-Checks reject HTTP/application/HTML errors, count changes, wrong page numbers,
-short pages and repeated pages. A final head/count recheck detects some source
-changes. The API offers no verified snapshot token: same-count changes outside
-the head cannot be ruled out. Long-interrupted runs should use a new run_id.
-
-The manifest is complete only when fetched rows equal the reported total.
-Sampling is explicitly marked sampled; failures are failed. The DataFrame builder
-accepts only complete, checksum-verified snapshots.
-No assumption is made that registration_number uniquely identifies a row:
-all source rows are retained. Proposed row identity is run_id/source_page/source_row.
-row_hash and duplicate statistics aid review rather than silently dropping data.
-All original fields, including future fields, remain in raw_json and raw page files.
-
-Dates are parsed as the observed MM/dd/yyyy format. Original date strings remain
-in expiration_date_raw; invalid or missing dates become null, not guessed dates.
-
-## Table preparation only
-
-The notebook builds `devices_df`, displays 20 rows and prints Delta DDL. It does
-not execute SQL, create a table, modify permissions, or publish records. A commented
-publication template is included for a later approved task using replaceWhere
-to replace only the selected run_id partition. The target catalog/schema/table
-must be agreed with the company before enabling writes.
-
-## Local run and checks
+The existing file-based CLI is retained separately. The notebook does not call
+it or the optional Spark/table-preparation helpers.
 
 ```sh
 python3 -m pip install -e '.[test]'
@@ -102,10 +112,18 @@ python3 -m pytest -q
 python3 -m moh_medical_devices --output output --run-id sample_20261020 --max-pages 2
 ```
 
-Omit --max-pages for a full local snapshot. Rebuild the ipynb after source notebook
-changes with `python3 tools/build_notebook.py`. The integration folder includes
-Postman collection/environment, OpenAPI and a shareable ZIP.
+Omit --max-pages for a full local file snapshot. CLI output includes raw page
+checkpoints, records.jsonl and a manifest under output/run_id. Resume requires
+unchanged source head/count and matching parameters. A complete manifest requires
+the fetched row count to match the API total. Samples are marked sampled, and
+errors are failed. Optional table preparation only accepts complete,
+checksum-verified file snapshots; it never writes a table itself.
 
-Official Databricks references:
-- https://docs.databricks.com/aws/en/volumes/
-- https://docs.databricks.com/aws/en/delta/selective-overwrite
+Registration number is not a unique row key. CLI row identity is
+run_id/source_page/source_row, while raw_json preserves all original fields.
+Dates use the observed MM/dd/yyyy format, retaining original strings and leaving
+invalid dates unknown instead of guessing.
+
+The checked-in ipynb is the notebook source of truth. The integration folder
+contains Postman collection/environment and OpenAPI. API request contracts and
+authentication behavior are unchanged.

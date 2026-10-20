@@ -7,7 +7,7 @@ name = "moh-medical-devices-pipeline"
 version = "0.1.0"
 description = "Read-only Medical Devices registry ingestion for Databricks"
 requires-python = ">=3.11"
-dependencies = ["requests>=2.32.3,<3"]
+dependencies = ["requests>=2.32.3,<3", "pandas>=2.2,<3"]
 
 [project.optional-dependencies]
 test = ["pytest>=8,<10"]
