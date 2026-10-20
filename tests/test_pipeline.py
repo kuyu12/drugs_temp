@@ -1,164 +1,127 @@
-import csv
-from pathlib import Path
+import json
+from types import SimpleNamespace
 
-from app.pipeline import DrugRegistryPipeline
+import pytest
 
-
-class FakeDrugRegistryService:
-    def __init__(self) -> None:
-        self.search_calls: list[str] = []
-        self.autocomplete_calls: list[str] = []
-
-    def search_by_name(self, name: str) -> list[dict]:
-        self.search_calls.append(name)
-        if name == "אקמול":
-            return [
-                {
-                    "registration_number": "020 16 20534 00",
-                    "hebrew_name": "אקמול",
-                    "english_name": "ACAMOL",
-                    "owner": "TEVA ISRAEL LTD",
-                    "dosage_form": "טבליה",
-                    "indications": "Relief of pain and fever.",
-                    "in_health_basket": True,
-                    "active_components": ["PARACETAMOL 500 MG"],
-                }
-            ]
-        if name == "AROMASIN":
-            return [
-                {
-                    "registration_number": "4011 00 00000 00",
-                    "hebrew_name": "ארומזין",
-                    "english_name": "AROMASIN",
-                    "owner": "PFIZER",
-                    "dosage_form": "TAB",
-                    "indications": "Cancer therapy.",
-                    "in_health_basket": True,
-                    "active_components": ["EXEMESTANE"],
-                }
-            ]
-        return []
-
-    def search_box_autocomplete(self, value: str) -> list[str]:
-        self.autocomplete_calls.append(value)
-        mapping = {
-            "אקמול": ["אקמול", "אקמול טבע"],
-            "aromasi": ["AROMASIN", "ARAVA 10 MG"],
-            "aromas": ["AROMASIN"],
-            "aroma": ["AROMASIN"],
-            "avastinx": ["AVASTIN", "AVAMYS"],
-            "avastinx": ["AVASTIN", "AVAMYS"],
-            "avasti": ["AVASTIN", "AVAMYS"],
-            "osten": ["FLOLAN INFUSION OF EPOPROSTENOL 1500 MCG"],
-        }
-        return mapping.get(value, [])
-
-    def get_specific_drug(self, registration_number: str) -> dict:
-        return {
-            "registration_number": registration_number,
-            "hebrew_name": "אקמול",
-            "english_name": "ACAMOL",
-            "owner": "TEVA ISRAEL LTD",
-            "dosage_form": "טבליה",
-            "indications": "Relief of pain and fever.",
-            "in_health_basket": True,
-            "date_of_inclusion": "01/01/1995",
-            "limitations": "Approved",
-            "use_in_clalit": "Pain",
-            "active_components": ["PARACETAMOL 500 MG"],
-        }
+from moh_medical_devices.client import Config, RegistryError
+from moh_medical_devices.pipeline import normalize, run_snapshot
+from moh_medical_devices.table import prepare_dataframe, table_ddl
 
 
-def test_pipeline_uses_autocomplete_and_search() -> None:
-    pipeline = DrugRegistryPipeline(FakeDrugRegistryService(), max_variants_per_drug=3)
-    row = pipeline._process_input_row(
-        row=type("Row", (), {"input_drug_name": "אקמול", "hebrew_name": "", "english_name": "", "registration_number": ""})(),
-        include_details=False,
-    )
+class FakeClient:
+    config = Config(delay_seconds=0)
 
-    assert row.matched_name == "אקמול"
-    assert row.autocomplete_candidates == "אקמול | אקמול טבע"
-    assert row.lookup_stage == "autocomplete_suggestion"
-    assert row.resolution_status == "registry_match"
+    def __init__(self):
+        self.calls = []
+        self.rows = [{"registrationNumber": "000123" if i < 2 else str(100 + i),
+                      "hProductName": f"Device {i}", "experationDate": "12/31/2026",
+                      "future_field": {"nested": [i]}} for i in range(5)]
 
-
-def test_pipeline_marks_not_found_when_no_autocomplete_suggestions(tmp_path: Path) -> None:
-    input_path = tmp_path / "input.csv"
-    output_path = tmp_path / "output.csv"
-    input_path.write_text("drug_name\nלא קיים\n", encoding="utf-8")
-
-    pipeline = DrugRegistryPipeline(FakeDrugRegistryService())
-    results = pipeline.run(input_path=input_path, output_path=output_path, include_details=False)
-
-    assert results[0].resolution_status == "not_found_via_autocomplete"
-    assert results[0].error == "not_found"
+    def search(self, page, size, search, declaration):
+        self.calls.append(page)
+        return {"statusCode": 200, "returnObject": {"pageNumber": page, "totalRows": len(self.rows),
+                "medicalAccessoriesList": self.rows[page * size:(page + 1) * size]}}
 
 
-def test_pipeline_marks_api_no_match_when_autocomplete_exists(tmp_path: Path) -> None:
-    input_path = tmp_path / "input.csv"
-    output_path = tmp_path / "output.csv"
-    input_path.write_text("drug_name,english_name\nsomething,AVASTINX\n", encoding="utf-8")
-
-    service = FakeDrugRegistryService()
-    pipeline = DrugRegistryPipeline(service)
-    results = pipeline.run(input_path=input_path, output_path=output_path, include_details=False)
-
-    assert results[0].resolution_status == "autocomplete_candidates_api_no_match"
-    assert results[0].autocomplete_candidates
-
-
-def test_pipeline_rejects_irrelevant_autocomplete_candidate(tmp_path: Path) -> None:
-    input_path = tmp_path / "input.csv"
-    output_path = tmp_path / "output.csv"
-    input_path.write_text("drug_name,english_name\nostenil,OSTENIL\n", encoding="utf-8")
-
-    pipeline = DrugRegistryPipeline(FakeDrugRegistryService())
-    results = pipeline.run(input_path=input_path, output_path=output_path, include_details=False)
-
-    assert results[0].resolution_status == "not_found_via_autocomplete"
-    assert results[0].autocomplete_candidates == ""
+def test_full_snapshot_preserves_fields_duplicate_registrations_and_resume(tmp_path):
+    client = FakeClient()
+    m = run_snapshot(client, str(tmp_path), "full", page_size=2)
+    assert m["status"] == "complete" and m["rows"] == 5 and m["unique_registration_numbers"] == 4
+    rows = [json.loads(line) for line in (tmp_path / "full/records.jsonl").read_text().splitlines()]
+    assert rows[0]["registration_number"] == "000123"
+    assert json.loads(rows[0]["raw_json"])["future_field"] == {"nested": [0]}
+    assert rows[0]["expiration_date"] == "2026-12-31"
+    client.calls.clear()
+    run_snapshot(client, str(tmp_path), "full", page_size=2)
+    assert client.calls == [0, 0]
 
 
-def test_pipeline_writes_partial_output_after_each_row(tmp_path: Path) -> None:
-    input_path = tmp_path / "input.csv"
-    output_path = tmp_path / "output.csv"
-    input_path.write_text("drug_name\nאקמול\nלא קיים\n", encoding="utf-8")
-
-    pipeline = DrugRegistryPipeline(FakeDrugRegistryService())
-    results = pipeline.run(input_path=input_path, output_path=output_path, include_details=False)
-
-    rows = list(csv.DictReader(output_path.open("r", encoding="utf-8", newline="")))
-    assert len(rows) == 2
-    assert len(results) == 2
+def test_sample_cannot_prepare_table(tmp_path):
+    m = run_snapshot(FakeClient(), str(tmp_path), "sample", page_size=2, max_pages=1)
+    assert m["status"] == "sampled" and m["rows"] == 2
+    with pytest.raises(ValueError, match="complete"):
+        prepare_dataframe(None, str(tmp_path / "sample"))
 
 
-def test_pipeline_limits_variants_per_drug(tmp_path: Path) -> None:
-    input_path = tmp_path / "input.csv"
-    output_path = tmp_path / "output.csv"
-    input_path.write_text("drug_name,english_name\nx,AROMASINX\n", encoding="utf-8")
-
-    service = FakeDrugRegistryService()
-    pipeline = DrugRegistryPipeline(service, max_variants_per_drug=1)
-    pipeline.run(input_path=input_path, output_path=output_path, include_details=False)
-
-    assert len(service.search_calls) <= 1
-
-
-def test_pipeline_uses_registration_number_when_available(tmp_path: Path) -> None:
-    input_path = tmp_path / "input.csv"
-    output_path = tmp_path / "output.csv"
-    input_path.write_text("drug_name,registration_number\nאקמול,020 16 20534 00\n", encoding="utf-8")
-
-    service = FakeDrugRegistryService()
-    pipeline = DrugRegistryPipeline(service)
-    results = pipeline.run(input_path=input_path, output_path=output_path)
-
-    assert results[0].match_strategy == "registration_number"
-    assert results[0].lookup_stage == "get_specific_drug"
-    assert service.search_calls == []
+def test_short_page_fails_closed(tmp_path):
+    class ShortClient(FakeClient):
+        def search(self, *args):
+            result = super().search(*args)
+            result["returnObject"]["medicalAccessoriesList"] = []
+            return result
+    with pytest.raises(RegistryError, match="length"):
+        run_snapshot(ShortClient(), str(tmp_path), "short", page_size=2)
+    assert json.loads((tmp_path / "short/manifest.json").read_text())["status"] == "failed"
 
 
-def test_pipeline_cleans_production_style_drug_names() -> None:
-    assert DrugRegistryPipeline._clean_input_value("(abraxane (N                                      ") == "abraxane"
-    assert DrugRegistryPipeline._clean_input_value("targretin (ייבוא)") == "targretin"
-    assert DrugRegistryPipeline._clean_input_value("daivonex  onitment") == "daivonex onitment"
+def test_repeated_page_is_rejected(tmp_path):
+    class RepeatClient(FakeClient):
+        def search(self, page, size, *args):
+            result = super().search(page, size, *args)
+            result["returnObject"]["medicalAccessoriesList"] = self.rows[:size]
+            return result
+    with pytest.raises(RegistryError, match="Repeated"):
+        run_snapshot(RepeatClient(), str(tmp_path), "repeat", page_size=2)
+
+
+def test_source_count_change_is_rejected(tmp_path):
+    class ChangedClient(FakeClient):
+        def search(self, page, *args):
+            result = super().search(page, *args)
+            if page:
+                result["returnObject"]["totalRows"] += 1
+            return result
+    with pytest.raises(RegistryError, match="total changed"):
+        run_snapshot(ChangedClient(), str(tmp_path), "changed", page_size=2)
+
+
+def test_new_filters_cannot_reuse_old_pages(tmp_path):
+    client = FakeClient()
+    run_snapshot(client, str(tmp_path), "same", page_size=2)
+    with pytest.raises(ValueError, match="parameters changed"):
+        run_snapshot(client, str(tmp_path), "same", page_size=2, search="other")
+
+
+def test_source_head_change_blocks_resume(tmp_path):
+    client = FakeClient()
+    run_snapshot(client, str(tmp_path), "same", page_size=2)
+    client.rows[0] = {**client.rows[0], "hProductName": "changed"}
+    with pytest.raises(RegistryError, match="head changed"):
+        run_snapshot(client, str(tmp_path), "same", page_size=2)
+
+
+def test_checksum_protects_table_preparation(tmp_path):
+    run_snapshot(FakeClient(), str(tmp_path), "good", page_size=2)
+    (tmp_path / "good/records.jsonl").write_text("{}\n")
+    with pytest.raises(ValueError, match="checksum"):
+        prepare_dataframe(None, str(tmp_path / "good"))
+
+
+def test_dataframe_preparation_uses_explicit_schema_and_no_table_operations(tmp_path):
+    run_snapshot(FakeClient(), str(tmp_path), "good", page_size=2)
+    class Reader:
+        def schema(self, value):
+            assert "registration_number` STRING" in value
+            return self
+        def option(self, *args):
+            return self
+        def json(self, filename):
+            return SimpleNamespace(count=lambda: 5)
+    frame = prepare_dataframe(SimpleNamespace(read=Reader()), str(tmp_path / "good"))
+    assert frame.count() == 5
+
+
+@pytest.mark.parametrize("name", ["table", "a.b", "a.b.c;DROP TABLE x", "a.b.c.d"])
+def test_table_identifiers_are_validated(name):
+    with pytest.raises(ValueError):
+        table_ddl(name)
+
+
+def test_table_ddl_is_preparation_only():
+    ddl = table_ddl("catalog.schema.devices")
+    assert "USING DELTA" in ddl and "PARTITIONED BY (run_id)" in ddl
+
+
+def test_invalid_date_remains_unknown_without_losing_original():
+    row = normalize({"registrationNumber": "1", "experationDate": "invalid"}, "run", 0, 0, "now")
+    assert row["expiration_date"] is None and row["expiration_date_raw"] == "invalid"

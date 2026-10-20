@@ -1,0 +1,246 @@
+openapi: 3.0.3
+info:
+  title: MOH Medical Devices - Public Registry API
+  version: 0.1.0
+  description: |
+    Consumer-maintained specification based on public frontend code and live
+    read-only checks on 2026-10-20. Not an official provider contract or SLA.
+    All five operations use POST with JSON, without authentication or browser
+    cookies in the verified requests. No patient data is required.
+    Search reported 30283 rows; first and final pages and details were verified.
+    Do not infer license status from the presence of a record or its expiry date.
+    Historical expiry dates are present. Preserve all source fields.
+servers:
+  - url: https://registries.health.gov.il/api/MedicalDevices
+security: []
+x-network-approval:
+  direction: outbound
+  destination-fqdn: registries.health.gov.il
+  destination-port: 443
+  protocol: HTTPS over TCP
+  methods: [POST]
+  path-prefix: /api/MedicalDevices/
+  inbound-listener-required: false
+  auth-observed: none
+  browser-required: false
+  tls-policy: Verify certificate and hostname
+  transmitted-data: Public device names, company-name filters, registration numbers and pagination controls
+  client-concurrency: 1
+  proposed-delay-seconds: 2
+  provider-rate-limit: Unknown; the proposed delay is a client setting
+paths:
+  /GetMedicalDevicesDataWithParam:
+    post:
+      operationId: searchMedicalDevices
+      summary: Search and paginate public medical device registrations
+      description: |
+        pageNumber starts at 0. maxResaults is the requested page size; 1000
+        was verified on the first and final pages. Preserve the misspelled names.
+        typePremission=true selects the declaration route; false selects all
+        declaration categories and does not mean active-only registrations.
+        sort=1 and isDecending=true match the inspected frontend settings.
+        Exact provider sort semantics and upper page-size limit are not documented.
+      requestBody:
+        $ref: '#/components/requestBodies/SearchBody'
+      responses:
+        '200':
+          $ref: '#/components/responses/DeviceRows'
+        default:
+          $ref: '#/components/responses/Failure'
+  /GetMedicalDeviceByRegistrationNumber:
+    post:
+      operationId: getMedicalDeviceDetails
+      summary: Read registration details
+      description: |
+        registrationNumber MUST be a JSON number. Sending it as a string
+        returned an HTML denial despite HTTP 200. Preserve the response number
+        as a string. Details may contain rows with totalRows=0; validate the
+        returned records and registration identity rather than the detail count.
+        One inspected detail had the same business fields as the search row.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              allOf:
+                - $ref: '#/components/schemas/SearchRequest'
+                - type: object
+                  required: [registrationNumber]
+                  properties:
+                    registrationNumber: {type: integer, format: int64, minimum: 1}
+            example:
+              pageNumber: 0
+              maxResaults: 20
+              registrationNumber: 25320001
+              accessoryName: ''
+              registeredOwner: ''
+              manufacter: ''
+              search: ''
+              isDecending: true
+              accessoryCode: 0
+              manufacterCode: 0
+              registeredOwnerCode: 0
+              typePremission: false
+              sort: 1
+      responses:
+        '200':
+          $ref: '#/components/responses/DeviceRows'
+        default:
+          $ref: '#/components/responses/Failure'
+  /GetAccessoryNameFilter:
+    post:
+      operationId: getAccessoryNameOptions
+      summary: Read device-name filter suggestions
+      description: Use accessoryName as the autocomplete input; tested with Somnu
+      requestBody:
+        $ref: '#/components/requestBodies/SearchBody'
+      responses:
+        '200':
+          $ref: '#/components/responses/Options'
+        default:
+          $ref: '#/components/responses/Failure'
+  /GetManufacturesFilter:
+    post:
+      operationId: getManufacturerOptions
+      summary: Read manufacturer filter suggestions
+      description: Use manufacter (source spelling) as autocomplete input; tested with DISCOVER
+      requestBody:
+        $ref: '#/components/requestBodies/SearchBody'
+      responses:
+        '200':
+          $ref: '#/components/responses/Options'
+        default:
+          $ref: '#/components/responses/Failure'
+  /GetRegisteredOwnerFilter:
+    post:
+      operationId: getRegisteredOwnerOptions
+      summary: Read registered-owner filter suggestions
+      description: Use registeredOwner as autocomplete input; tested with DISCOVER
+      requestBody:
+        $ref: '#/components/requestBodies/SearchBody'
+      responses:
+        '200':
+          $ref: '#/components/responses/Options'
+        default:
+          $ref: '#/components/responses/Failure'
+components:
+  requestBodies:
+    SearchBody:
+      required: true
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/SearchRequest'
+          example:
+            pageNumber: 0
+            maxResaults: 20
+            accessoryName: ''
+            registeredOwner: ''
+            manufacter: ''
+            search: ''
+            isDecending: true
+            registrationNumber: 0
+            accessoryCode: 0
+            manufacterCode: 0
+            registeredOwnerCode: 0
+            typePremission: false
+            sort: 1
+  responses:
+    DeviceRows:
+      description: |
+        Require HTTP 200, JSON and statusCode=200. Search totalRows is used for
+        completeness; detail totalRows may be zero despite a nonempty list.
+      content:
+        application/json:
+          schema:
+            allOf:
+              - $ref: '#/components/schemas/Envelope'
+              - type: object
+                properties:
+                  returnObject:
+                    type: object
+                    nullable: true
+                    additionalProperties: true
+                    properties:
+                      totalRows: {type: integer}
+                      pageNumber: {type: integer}
+                      maxResaults: {type: integer}
+                      medicalAccessoriesList:
+                        type: array
+                        items:
+                          $ref: '#/components/schemas/Device'
+        text/html:
+          schema: {type: string}
+    Options:
+      description: Filter option envelope; names and keys are preserved as returned
+      content:
+        application/json:
+          schema:
+            allOf:
+              - $ref: '#/components/schemas/Envelope'
+              - type: object
+                properties:
+                  returnObject:
+                    type: array
+                    nullable: true
+                    items:
+                      type: object
+                      additionalProperties: true
+                      properties:
+                        name: {type: string}
+                        key: {type: integer, description: May be 0 for a device-name option}
+        text/html:
+          schema: {type: string}
+    Failure:
+      description: |
+        Non-success HTTP or application response. HTML with HTTP 200 is also a
+        failure. Stop on access/contract errors; retry only transient transport,
+        429 or 5xx errors with a finite budget and honor Retry-After if supplied.
+        These are client handling expectations, not a provider error catalog.
+      content:
+        application/json:
+          schema: {type: object, additionalProperties: true}
+        text/html:
+          schema: {type: string}
+  schemas:
+    Envelope:
+      type: object
+      additionalProperties: true
+      properties:
+        statusCode: {type: integer, description: Require 200 for successful data}
+        message: {type: string, nullable: true}
+    SearchRequest:
+      type: object
+      description: Tested client profile; upstream requiredness and all filter combinations are not exhaustive
+      properties:
+        pageNumber: {type: integer, minimum: 0, default: 0}
+        maxResaults: {type: integer, minimum: 1, default: 20}
+        accessoryName: {type: string, default: ''}
+        registeredOwner: {type: string, default: ''}
+        manufacter: {type: string, default: ''}
+        search: {type: string, default: ''}
+        isDecending: {type: boolean, default: true}
+        registrationNumber: {type: integer, format: int64, minimum: 0, default: 0}
+        accessoryCode: {type: integer, default: 0}
+        manufacterCode: {type: integer, default: 0}
+        registeredOwnerCode: {type: integer, default: 0}
+        typePremission: {type: boolean, default: false}
+        sort: {type: integer, default: 1}
+    Device:
+      type: object
+      additionalProperties: true
+      description: Preserve full source JSON; registrationNumber is not assumed globally unique across rows
+      properties:
+        hProductName: {type: string, nullable: true}
+        eProductName: {type: string, nullable: true}
+        registrationNumber: {type: string}
+        experationDate: {type: string, nullable: true, description: Observed format MM/dd/yyyy; retain original value}
+        manufacturerName: {type: string, nullable: true}
+        countryCreated: {type: string, nullable: true}
+        registeredOwner: {type: string, nullable: true}
+        operator: {type: string, nullable: true}
+        usagePlace: {type: string, nullable: true}
+        experties: {type: string, nullable: true}
+        description: {type: string, nullable: true}
+        label: {type: string, nullable: true}
+        typePermission: {type: string, nullable: true}

@@ -1,4 +1,0 @@
-input_drug_name,matched_name,registration_number,in_health_basket,basket_inclusion_date,owner,dosage_form,active_components,indications,limitations,use_in_clalit,match_count,match_strategy,error
-אקמול,אקמול,020 16 20534 00,true,01/01/1995,TEVA ISRAEL LTD,טבליה,PARACETAMOL 500 MG,Relief of pain and fever.,Approved for general HMO use,Mild to moderate pain,1,exact_hebrew_name,
-אדויל,,,,,,,,,,,0,,Drug registry server error for SearchByName (HTTP 502)
-נורופן,,,,,,,,,,,0,,Drug registry server error for SearchByName (HTTP 502)

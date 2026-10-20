@@ -1,0 +1,370 @@
+{
+  "info": {
+    "name": "MOH Medical Devices - Integration",
+    "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json",
+    "description": "Consumer-maintained API requests, verified 2026-10-20. Import/select the environment, run 01 then 02; 03-05 are independent filter lookups. Every request is read-only POST. No authentication or browser cookies included. Keep TLS validation enabled and Runner delay >=2000ms. No bulk pagination or table writes are automated here."
+  },
+  "auth": {
+    "type": "noauth"
+  },
+  "event": [
+    {
+      "listen": "test",
+      "script": {
+        "type": "text/javascript",
+        "exec": [
+          "pm.test('HTTP 200', () => pm.response.to.have.status(200));",
+          "const jsonResponse = /json/i.test(pm.response.headers.get('Content-Type') || '');",
+          "pm.test('JSON, not HTML rejection', () => pm.expect(jsonResponse).to.equal(true));",
+          "if (jsonResponse) {",
+          "    const envelope = pm.response.json();",
+          "    pm.test('Application success', () => pm.expect(envelope.statusCode).to.equal(200));",
+          "    pm.test('returnObject present', () => pm.expect(envelope.returnObject).to.not.equal(null).and.not.equal(undefined));",
+          "}"
+        ]
+      }
+    }
+  ],
+  "item": [
+    {
+      "name": "01 - searchMedicalDevices",
+      "request": {
+        "method": "POST",
+        "url": {
+          "raw": "{{base_url}}/GetMedicalDevicesDataWithParam",
+          "host": [
+            "{{base_url}}"
+          ],
+          "path": [
+            "GetMedicalDevicesDataWithParam"
+          ]
+        },
+        "header": [
+          {
+            "key": "Accept",
+            "value": "application/json"
+          },
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{{request_json}}",
+          "options": {
+            "raw": {
+              "language": "json"
+            }
+          }
+        },
+        "description": "pageNumber starts at 0. maxResaults is the requested page size; 1000\nwas verified on the first and final pages. Preserve the misspelled names.\ntypePremission=true selects the declaration route; false selects all\ndeclaration categories and does not mean active-only registrations.\nsort=1 and isDecending=true match the inspected frontend settings.\nExact provider sort semantics and upper page-size limit are not documented.\n"
+      },
+      "event": [
+        {
+          "listen": "prerequest",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "const p = {\"pageNumber\": 0, \"maxResaults\": 20, \"accessoryName\": \"\", \"registeredOwner\": \"\", \"manufacter\": \"\", \"search\": \"\", \"isDecending\": true, \"registrationNumber\": 0, \"accessoryCode\": 0, \"manufacterCode\": 0, \"registeredOwnerCode\": 0, \"typePremission\": false, \"sort\": 1};",
+              "",
+              "pm.environment.unset('registration_number'); pm.environment.unset('selection_query');",
+              "if (!/^[0-9]+$/.test(String(pm.environment.get('page_number')))) throw new Error('page_number must be nonnegative');",
+              "if (!/^[1-9][0-9]*$/.test(String(pm.environment.get('page_size')))) throw new Error('page_size must be positive');",
+              "if (!['true','false'].includes(String(pm.environment.get('declaration_only')))) throw new Error('declaration_only must be true/false');",
+              "p.pageNumber = Number(pm.environment.get('page_number'));",
+              "p.maxResaults = Number(pm.environment.get('page_size'));",
+              "p.search = String(pm.environment.get('search_text') || '');",
+              "p.typePremission = pm.environment.get('declaration_only') === 'true';",
+              "",
+              "pm.variables.set('request_json', JSON.stringify(p));"
+            ]
+          }
+        },
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "if (pm.response.code === 200 && /json/i.test(pm.response.headers.get('Content-Type') || '')) {",
+              "    const e = pm.response.json(), d = e.returnObject;",
+              "    if (e.statusCode === 200 && d) {",
+              "        pm.test('Search count and list', () => { pm.expect(d.totalRows).to.be.a('number'); pm.expect(d.medicalAccessoriesList).to.be.an('array'); });",
+              "        if (Array.isArray(d.medicalAccessoriesList) && d.medicalAccessoriesList.length) {",
+              "            pm.environment.set('registration_number', String(d.medicalAccessoriesList[0].registrationNumber));",
+              "            pm.environment.set('selection_query', JSON.stringify([pm.environment.get('search_text'), pm.environment.get('declaration_only')]));",
+              "        }",
+              "    }",
+              "}"
+            ]
+          }
+        }
+      ],
+      "response": []
+    },
+    {
+      "name": "02 - getMedicalDeviceDetails",
+      "request": {
+        "method": "POST",
+        "url": {
+          "raw": "{{base_url}}/GetMedicalDeviceByRegistrationNumber",
+          "host": [
+            "{{base_url}}"
+          ],
+          "path": [
+            "GetMedicalDeviceByRegistrationNumber"
+          ]
+        },
+        "header": [
+          {
+            "key": "Accept",
+            "value": "application/json"
+          },
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{{request_json}}",
+          "options": {
+            "raw": {
+              "language": "json"
+            }
+          }
+        },
+        "description": "registrationNumber MUST be a JSON number. Sending it as a string\nreturned an HTML denial despite HTTP 200. Preserve the response number\nas a string. Details may contain rows with totalRows=0; validate the\nreturned records and registration identity rather than the detail count.\nOne inspected detail had the same business fields as the search row.\n"
+      },
+      "event": [
+        {
+          "listen": "prerequest",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "const p = {\"pageNumber\": 0, \"maxResaults\": 20, \"accessoryName\": \"\", \"registeredOwner\": \"\", \"manufacter\": \"\", \"search\": \"\", \"isDecending\": true, \"registrationNumber\": 0, \"accessoryCode\": 0, \"manufacterCode\": 0, \"registeredOwnerCode\": 0, \"typePremission\": false, \"sort\": 1};",
+              "",
+              "const number = String(pm.environment.get('registration_number') || '');",
+              "if (!/^[0-9]+$/.test(number) || !Number.isSafeInteger(Number(number)) || Number(number) <= 0) throw new Error('Run 01 search first');",
+              "if (pm.environment.get('selection_query') !== JSON.stringify([pm.environment.get('search_text'), pm.environment.get('declaration_only')])) throw new Error('Filters changed; run search again');",
+              "p.registrationNumber = Number(number);",
+              "",
+              "pm.variables.set('request_json', JSON.stringify(p));"
+            ]
+          }
+        },
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "if (pm.response.code === 200 && /json/i.test(pm.response.headers.get('Content-Type') || '')) {",
+              "    const e = pm.response.json(), rows = e.returnObject && e.returnObject.medicalAccessoriesList;",
+              "    pm.test('Detail rows present (totalRows may be 0)', () => pm.expect(rows).to.be.an('array').that.is.not.empty);",
+              "    if (Array.isArray(rows)) pm.test('Registration identity matches', () => {",
+              "        for (const row of rows) pm.expect(String(row.registrationNumber)).to.equal(pm.environment.get('registration_number'));",
+              "    });",
+              "}"
+            ]
+          }
+        }
+      ],
+      "response": []
+    },
+    {
+      "name": "03 - getAccessoryNameOptions",
+      "request": {
+        "method": "POST",
+        "url": {
+          "raw": "{{base_url}}/GetAccessoryNameFilter",
+          "host": [
+            "{{base_url}}"
+          ],
+          "path": [
+            "GetAccessoryNameFilter"
+          ]
+        },
+        "header": [
+          {
+            "key": "Accept",
+            "value": "application/json"
+          },
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{{request_json}}",
+          "options": {
+            "raw": {
+              "language": "json"
+            }
+          }
+        },
+        "description": "Use accessoryName as the autocomplete input; tested with Somnu"
+      },
+      "event": [
+        {
+          "listen": "prerequest",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "const p = {\"pageNumber\": 0, \"maxResaults\": 20, \"accessoryName\": \"\", \"registeredOwner\": \"\", \"manufacter\": \"\", \"search\": \"\", \"isDecending\": true, \"registrationNumber\": 0, \"accessoryCode\": 0, \"manufacterCode\": 0, \"registeredOwnerCode\": 0, \"typePremission\": false, \"sort\": 1};",
+              "p.accessoryName = String(pm.environment.get('accessory_filter') || '');",
+              "",
+              "pm.variables.set('request_json', JSON.stringify(p));"
+            ]
+          }
+        },
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "if (pm.response.code === 200 && /json/i.test(pm.response.headers.get('Content-Type') || '')) {",
+              "    const rows = pm.response.json().returnObject;",
+              "    pm.test('Filter options array', () => pm.expect(rows).to.be.an('array'));",
+              "    if (Array.isArray(rows)) pm.test('Option names and keys', () => {",
+              "        for (const row of rows) { pm.expect(row).to.have.property('name'); pm.expect(row).to.have.property('key'); }",
+              "    });",
+              "}"
+            ]
+          }
+        }
+      ],
+      "response": []
+    },
+    {
+      "name": "04 - getManufacturerOptions",
+      "request": {
+        "method": "POST",
+        "url": {
+          "raw": "{{base_url}}/GetManufacturesFilter",
+          "host": [
+            "{{base_url}}"
+          ],
+          "path": [
+            "GetManufacturesFilter"
+          ]
+        },
+        "header": [
+          {
+            "key": "Accept",
+            "value": "application/json"
+          },
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{{request_json}}",
+          "options": {
+            "raw": {
+              "language": "json"
+            }
+          }
+        },
+        "description": "Use manufacter (source spelling) as autocomplete input; tested with DISCOVER"
+      },
+      "event": [
+        {
+          "listen": "prerequest",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "const p = {\"pageNumber\": 0, \"maxResaults\": 20, \"accessoryName\": \"\", \"registeredOwner\": \"\", \"manufacter\": \"\", \"search\": \"\", \"isDecending\": true, \"registrationNumber\": 0, \"accessoryCode\": 0, \"manufacterCode\": 0, \"registeredOwnerCode\": 0, \"typePremission\": false, \"sort\": 1};",
+              "p.manufacter = String(pm.environment.get('manufacturer_filter') || '');",
+              "",
+              "pm.variables.set('request_json', JSON.stringify(p));"
+            ]
+          }
+        },
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "if (pm.response.code === 200 && /json/i.test(pm.response.headers.get('Content-Type') || '')) {",
+              "    const rows = pm.response.json().returnObject;",
+              "    pm.test('Filter options array', () => pm.expect(rows).to.be.an('array'));",
+              "    if (Array.isArray(rows)) pm.test('Option names and keys', () => {",
+              "        for (const row of rows) { pm.expect(row).to.have.property('name'); pm.expect(row).to.have.property('key'); }",
+              "    });",
+              "}"
+            ]
+          }
+        }
+      ],
+      "response": []
+    },
+    {
+      "name": "05 - getRegisteredOwnerOptions",
+      "request": {
+        "method": "POST",
+        "url": {
+          "raw": "{{base_url}}/GetRegisteredOwnerFilter",
+          "host": [
+            "{{base_url}}"
+          ],
+          "path": [
+            "GetRegisteredOwnerFilter"
+          ]
+        },
+        "header": [
+          {
+            "key": "Accept",
+            "value": "application/json"
+          },
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{{request_json}}",
+          "options": {
+            "raw": {
+              "language": "json"
+            }
+          }
+        },
+        "description": "Use registeredOwner as autocomplete input; tested with DISCOVER"
+      },
+      "event": [
+        {
+          "listen": "prerequest",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "const p = {\"pageNumber\": 0, \"maxResaults\": 20, \"accessoryName\": \"\", \"registeredOwner\": \"\", \"manufacter\": \"\", \"search\": \"\", \"isDecending\": true, \"registrationNumber\": 0, \"accessoryCode\": 0, \"manufacterCode\": 0, \"registeredOwnerCode\": 0, \"typePremission\": false, \"sort\": 1};",
+              "p.registeredOwner = String(pm.environment.get('owner_filter') || '');",
+              "",
+              "pm.variables.set('request_json', JSON.stringify(p));"
+            ]
+          }
+        },
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "if (pm.response.code === 200 && /json/i.test(pm.response.headers.get('Content-Type') || '')) {",
+              "    const rows = pm.response.json().returnObject;",
+              "    pm.test('Filter options array', () => pm.expect(rows).to.be.an('array'));",
+              "    if (Array.isArray(rows)) pm.test('Option names and keys', () => {",
+              "        for (const row of rows) { pm.expect(row).to.have.property('name'); pm.expect(row).to.have.property('key'); }",
+              "    });",
+              "}"
+            ]
+          }
+        }
+      ],
+      "response": []
+    }
+  ]
+}
