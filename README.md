@@ -113,6 +113,16 @@ devices_df.attrs['extraction']
 devices_df[['registration_number', 'product_name_en', 'details']].head()
 ```
 
+On failure the notebook prints the complete chained traceback and re-raises the
+same exception. `last_error` holds that exception object; `last_error_traceback`
+holds the full formatted text even if the notebook UI truncates its display.
+HTTP/JSON/application errors retain the response object on `RegistryError.response`
+and include the untruncated body, status and endpoint in exception notes.
+Original HTTP, transport and JSON exceptions remain chained; detail failures
+also identify the registration number, including failures inside worker threads.
+Request headers/cookies are not printed. Error bodies may contain upstream data;
+review diagnostics before sharing them outside approved company channels.
+
 Every listing row, original column, normalized column and raw_json is retained.
 Duplicate registration numbers stay as separate rows. The details column holds
 a list of all matching detail records, preserving nested and future fields.

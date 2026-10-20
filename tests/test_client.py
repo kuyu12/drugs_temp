@@ -1,4 +1,5 @@
 from unittest.mock import patch
+import json
 
 import pytest
 import requests
@@ -11,8 +12,12 @@ class Response:
         self.data = data
         self.status_code = status
         self.headers = {"Content-Type": content_type, **headers}
+        self.text = json.dumps(data)
     def json(self):
         return self.data
+    def raise_for_status(self):
+        if self.status_code >= 400:
+            raise requests.HTTPError(f"HTTP {self.status_code}", response=self)
 
 
 def envelope(data):

@@ -14,7 +14,11 @@ LOG = logging.getLogger(__name__)
 
 def _fetch_details(client, numbers, workers, requests_per_second):
     def fetch(worker_client, number):
-        response = worker_client.details(number)
+        try:
+            response = worker_client.details(number)
+        except Exception as exc:
+            exc.add_note(f"Fetching details for registration_number={number}")
+            raise
         return (response["returnObject"]["medicalAccessoriesList"],
                 json_text(response), datetime.now(timezone.utc).isoformat())
 

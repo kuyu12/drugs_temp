@@ -14,6 +14,22 @@ class RegistryError(RuntimeError):
     """API access, contract or transport failure; never an empty result."""
 
 
+def _raise_response_error(message, response, url, cause=None):
+    error = RegistryError(message)
+    error.response = response
+    error.add_note(f"Request: POST {url}")
+    error.add_note(f"HTTP {response.status_code}; Content-Type: {response.headers.get('Content-Type', '')}")
+    error.add_note("Full response body (untruncated):\n" + response.text)
+    if cause is None:
+        try:
+            response.raise_for_status()
+        except requests.HTTPError as exc:
+            cause = exc
+    if cause is not None:
+        raise error from cause
+    raise error
+
+
 class RequestLimiter:
     """Shared request spacing, server cooldown and cancellation for one run."""
 
@@ -104,23 +120,28 @@ class Client:
         return Client(replace(self.config, delay_seconds=0), limiter=limiter)
 
     def post(self, action: str, payload: dict) -> dict[str, Any]:
+        url = self.config.base_url.rstrip("/") + "/" + action
         for attempt in range(self.config.attempts):
             time.sleep(self.config.delay_seconds)
             if self.limiter is not None:
                 self.limiter.wait()
             try:
-                response = self.session.post(self.config.base_url.rstrip("/") + "/" + action,
+                response = self.session.post(url,
                                              json=payload, timeout=self.config.timeout_seconds)
             except (requests.Timeout, requests.ConnectionError) as exc:
                 if attempt + 1 == self.config.attempts:
-                    raise RegistryError(f"Transport failure: {action}") from exc
+                    error = RegistryError(f"Transport failure: {action}")
+                    error.add_note(f"Request: POST {url}; attempt {attempt + 1}/{self.config.attempts}")
+                    raise error from exc
                 time.sleep(2 ** attempt)
                 continue
             except requests.RequestException as exc:
-                raise RegistryError(f"Request failure: {action}") from exc
+                error = RegistryError(f"Request failure: {action}")
+                error.add_note(f"Request: POST {url}; attempt {attempt + 1}/{self.config.attempts}")
+                raise error from exc
             if response.status_code == 429 or response.status_code >= 500:
                 if attempt + 1 == self.config.attempts:
-                    raise RegistryError(f"Retry budget exhausted: HTTP {response.status_code} {action}")
+                    _raise_response_error(f"Retry budget exhausted: HTTP {response.status_code} {action}", response, url)
                 retry = response.headers.get("Retry-After", "")
                 try:
                     wait = float(retry)
@@ -135,17 +156,17 @@ class Client:
                     time.sleep(max(0, wait))
                 continue
             if response.status_code != 200:
-                raise RegistryError(f"HTTP {response.status_code}: {action}")
+                _raise_response_error(f"HTTP {response.status_code}: {action}", response, url)
             if "json" not in response.headers.get("Content-Type", "").lower():
-                raise RegistryError(f"Non-JSON response, including possible HTML denial: {action}")
+                _raise_response_error(f"Non-JSON response, including possible HTML denial: {action}", response, url)
             try:
                 envelope = response.json()
             except ValueError as exc:
-                raise RegistryError(f"Invalid JSON: {action}") from exc
+                _raise_response_error(f"Invalid JSON: {action}", response, url, cause=exc)
             if not isinstance(envelope, dict) or envelope.get("statusCode") != 200:
-                raise RegistryError(f"Application failure: {action}")
+                _raise_response_error(f"Application failure: {action}", response, url)
             if not isinstance(envelope.get("returnObject"), (dict, list)):
-                raise RegistryError(f"Missing returnObject: {action}")
+                _raise_response_error(f"Missing returnObject: {action}", response, url)
             return envelope
         raise RegistryError("Retry budget exhausted")
 
